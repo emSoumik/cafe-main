@@ -1,0 +1,95 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    --background: 0 0% 98%;
+    --foreground: 20 14% 15%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 20 14% 15%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 20 14% 15%;
+
+    /* Green for positive actions (Add to Cart) */
+    --primary: 142 76% 36%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Orange for important CTAs (Place Order) */
+    --secondary: 25 95% 53%;
+    --secondary-foreground: 0 0% 100%;
+
+    --muted: 60 4.8% 95.9%;
+    --muted-foreground: 25 5.3% 44.7%;
+
+    --accent: 142 76% 92%;
+    --accent-foreground: 142 76% 20%;
+
+    /* Red for urgent actions (Bill Request) */
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Yellow for warnings/alerts */
+    --warning: 48 96% 53%;
+    --warning-foreground: 20 14% 15%;
+
+    --border: 20 5.9% 90%;
+    --input: 20 5.9% 90%;
+    --ring: 142 76% 36%;
+
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    --background: 20 14% 8%;
+    --foreground: 0 0% 98%;
+
+    --card: 20 14% 12%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 20 14% 10%;
+    --popover-foreground: 0 0% 98%;
+
+    /* Green for positive actions */
+    --primary: 142 76% 42%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Orange for important CTAs */
+    --secondary: 25 95% 60%;
+    --secondary-foreground: 0 0% 100%;
+
+    --muted: 0 0% 15%;
+    --muted-foreground: 240 5% 64.9%;
+
+    --accent: 142 76% 20%;
+    --accent-foreground: 142 76% 90%;
+
+    /* Red for urgent actions */
+    --destructive: 0 84% 65%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Yellow for warnings/alerts */
+    --warning: 48 96% 60%;
+    --warning-foreground: 20 14% 10%;
+
+    --border: 240 3.7% 20%;
+    --input: 240 3.7% 20%;
+    --ring: 142 76% 42%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}
