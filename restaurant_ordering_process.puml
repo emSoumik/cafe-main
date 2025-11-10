@@ -1,0 +1,25 @@
+@startuml
+title **Restaurant Ordering Process Flow**
+
+start
+
+:USER places an ORDER\n(Table: ORDER);
+note right: Links to **USER** (FK)
+
+:Process **ORDER_ITEM**s;
+note right: Links **ORDER** (FK) to **MENU_ITEM** (FK) and records **quantity**
+
+if (All items processed and order is complete?) then (yes)
+  :Generate **BILL**\n(Table: BILL);
+  note left: Links to **ORDER** (FK) and calculates **total**
+  
+  :Present Bill and Accept Payment;
+  
+  stop
+else (no)
+  :Update ORDER status (e.g., in progress);
+  
+  stop
+endif
+
+@enduml
