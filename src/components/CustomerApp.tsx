@@ -5,6 +5,21 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { User, LogOut, ArrowRightLeft, MoreVertical, Bell } from "lucide-react";
+import { requestNotificationPermission, showNotification } from "@/lib/notifications";
+
+interface CustomerAppProps {
+  onLogout: () => void;
+  onSwitchView: () => void;
+}
 
 // API URL (set via Vite env or fallback)
 const API = (import.meta.env && import.meta.env.VITE_API_URL) || "http://localhost:4001";
@@ -30,7 +45,7 @@ type CartItem = {
   quantity: number;
 };
 
-export const CustomerApp = () => {
+export const CustomerApp = ({ onLogout, onSwitchView }: CustomerAppProps) => {
   const [currentView, setCurrentView] = useState<"welcome" | "otp" | "menu" | "cart" | "orderPlaced">("welcome");
   const [tableNumber, setTableNumber] = useState("");
   const [customerName, setCustomerName] = useState("");
@@ -53,24 +68,32 @@ export const CustomerApp = () => {
   // Restore session (if any) on mount so user stays signed in across reloads
   useEffect(() => {
     try {
-      const s = localStorage.getItem('customerSession');
-      if (s) {
-        const parsed = JSON.parse(s);
-        if (parsed && parsed.phone) {
-          setPhone(parsed.phone);
-          setIsAuthenticated(true);
-          // take user to menu automatically if they were signed in
-          setCurrentView('menu');
-        }
+      // Check global auth first
+      const globalAuth = localStorage.getItem('user_data');
+      if (globalAuth) {
+        const user = JSON.parse(globalAuth);
+        if (user.phone) setPhone(user.phone);
+        if (user.name) setCustomerName(user.name);
+        setIsAuthenticated(true);
+        // If we have phone, we can skip straight to menu if table number is set, 
+        // but usually we still need table number.
+        // So we stay on welcome screen but pre-fill phone and hide the phone input.
       }
     } catch (e) {
       // ignore
     }
+
+    // Request notification permission
+    requestNotificationPermission().then(permission => {
+      if (permission === 'granted') {
+        console.log('Notification permission granted');
+      }
+    });
   }, []);
 
   const handleStartOrder = () => {
-    if (!tableNumber || !customerName || !phone) {
-      toast.error("Please enter table number, name and phone");
+    if (!tableNumber || !customerName) {
+      toast.error("Please enter table number and name");
       return;
     }
     if (parseInt(tableNumber) < 1 || parseInt(tableNumber) > 40) {
@@ -78,62 +101,21 @@ export const CustomerApp = () => {
       return;
     }
 
-    // Request OTP from backend (dev-friendly)
-    (async () => {
-      try {
-        const res = await fetch(`${API}/otp`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ phone }),
-        });
-        if (res.ok) {
-          const body = await res.json();
-          // backend returns code in dev for testing — we won't show it but store state to enable verify
-          setOtpSent(true);
-          setCurrentView("otp");
-          toast.success("OTP sent (for testing it may be returned by the API)");
-          return;
-        }
-      } catch (e) {
-        console.warn("OTP request failed, falling back to client-side OTP", e);
-      }
-
-      // fallback: generate and show OTP locally
-      setOtpSent(true);
-      setCurrentView("otp");
-      toast.success("OTP generated locally for testing");
-    })();
-  };
-
-  const verifyOtp = async () => {
-    try {
-      const res = await fetch(`${API}/otp/verify`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone, code: otpCode }),
-      });
-      if (res.ok) {
-        toast.success("Verified — welcome!");
-        // persist a minimal session so the user stays signed in across reloads
-        try { localStorage.setItem('customerSession', JSON.stringify({ phone })); } catch (e) {}
-        setIsAuthenticated(true);
-        setCurrentView("menu");
-        return;
-      }
-      const body = await res.json();
-      toast.error(body?.message || "Invalid code");
-    } catch (e) {
-      console.warn("OTP verify failed, falling back to simple check", e);
-      // simple fallback — accept any 4-digit code for offline dev
-      if (/^\d{4}$/.test(otpCode)) {
-        toast.success("Verified (offline)");
-        try { localStorage.setItem('customerSession', JSON.stringify({ phone })); } catch (e) {}
-        setIsAuthenticated(true);
-        setCurrentView("menu");
-      } else {
-        toast.error("Invalid code");
-      }
+    // If already authenticated (globally), skip OTP
+    if (isAuthenticated) {
+      setCurrentView("menu");
+      return;
     }
+
+    // Fallback for unauthenticated flow (shouldn't happen with new Index.tsx logic, but keeping for safety)
+    if (!phone) {
+      toast.error("Phone number required");
+      return;
+    }
+
+    // ... existing OTP logic would go here if we needed it, but we are removing it ...
+    // For now, just proceed if phone is present (legacy fallback)
+    setCurrentView("menu");
   };
 
   const addToCart = (item: any) => {
@@ -226,9 +208,13 @@ export const CustomerApp = () => {
           const next = Array.from(new Set([...(existing || []), newOrderId]));
           localStorage.setItem(key, JSON.stringify(next));
           setActiveOrders(next);
-        } catch (e) {}
+        } catch (e) { }
         setCurrentView("orderPlaced");
         toast.success("Order placed successfully!");
+        showNotification('Order Placed! 🎉', {
+          body: `Your order #${newOrderId} has been sent to the kitchen`,
+          tag: 'order-placed'
+        });
         setPollingStatus("PENDING");
         return;
       }
@@ -248,14 +234,14 @@ export const CustomerApp = () => {
         const next = Array.from(new Set([...(existing || []), newOrderId]));
         localStorage.setItem(key, JSON.stringify(next));
         setActiveOrders(next);
-      } catch (e) {}
+      } catch (e) { }
       setCurrentView("orderPlaced");
       toast.success("Order placed successfully! (offline)");
       setPollingStatus("PENDING");
     }
   };
 
-  
+
 
   // Fetch menu from backend (with local fallback) and poll periodically so customer sees admin edits
   useEffect(() => {
@@ -309,6 +295,20 @@ export const CustomerApp = () => {
           if (order.status && order.status !== pollingStatus) {
             setPollingStatus(order.status);
             toast(`Order status: ${order.status.replace("_", " ")}`);
+
+            // Show notification for status changes
+            if (order.status === "PREPARING") {
+              showNotification('Order Accepted! 👨‍🍳', {
+                body: `Your order #${orderId} is being prepared`,
+                tag: 'order-preparing'
+              });
+            } else if (order.status === "READY") {
+              showNotification('Order Ready! ✅', {
+                body: `Your order #${orderId} is ready for pickup`,
+                tag: 'order-ready',
+                requireInteraction: true // Keep notification until user interacts
+              });
+            }
             // If completed, reset after short delay
             if (order.status === "COMPLETED") {
               setTimeout(() => {
@@ -325,7 +325,7 @@ export const CustomerApp = () => {
                   const next = (existing || []).filter((id) => id !== orderId);
                   localStorage.setItem(key, JSON.stringify(next));
                   setActiveOrders(next);
-                } catch (e) {}
+                } catch (e) { }
               }, 3000);
             }
           }
@@ -363,12 +363,12 @@ export const CustomerApp = () => {
                   const o = await res.json();
                   statuses[id] = o;
                 }
-              } catch (e) {}
+              } catch (e) { }
             })
           );
           if (!cancelled) setActiveOrderStatuses(statuses);
         }
-      } catch (e) {}
+      } catch (e) { }
     };
     loadActive();
     const iv = window.setInterval(loadActive, 10000);
@@ -394,7 +394,7 @@ export const CustomerApp = () => {
                 const o = await res.json();
                 statuses[id] = o;
               }
-            } catch (e) {}
+            } catch (e) { }
           })
         );
         setActiveOrderStatuses(statuses);
@@ -409,7 +409,7 @@ export const CustomerApp = () => {
   };
 
   const signOut = () => {
-    try { localStorage.removeItem('customerSession'); } catch (e) {}
+    try { localStorage.removeItem('customerSession'); } catch (e) { }
     setIsAuthenticated(false);
     setPhone("");
     setActiveOrders([]);
@@ -418,6 +418,7 @@ export const CustomerApp = () => {
     setCurrentView('welcome');
     setTableNumber('');
     setCustomerName('');
+    onLogout();
   };
 
   // Listen for cross-tab menu updates (triggered by admin actions) and refresh menu immediately
@@ -474,14 +475,25 @@ export const CustomerApp = () => {
               />
             </div>
             <div>
-              <label className="text-sm font-medium mb-2 block">Phone (for OTP)</label>
+              <label className="text-sm font-medium mb-2 block">Your Name</label>
               <Input
-                type="tel"
-                placeholder="Enter your phone number"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
+                type="text"
+                placeholder="Enter your name"
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
               />
             </div>
+            {!isAuthenticated && (
+              <div>
+                <label className="text-sm font-medium mb-2 block">Phone (for OTP)</label>
+                <Input
+                  type="tel"
+                  placeholder="Enter your phone number"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                />
+              </div>
+            )}
             <Button onClick={handleStartOrder} className="w-full" size="lg">
               View Menu
             </Button>
@@ -521,133 +533,204 @@ export const CustomerApp = () => {
     );
   }
 
-  // OTP verification screen
-  if (currentView === "otp") {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center p-4">
-        <Card className="w-full max-w-md p-8 space-y-6">
-          <div className="text-center space-y-2">
-            <h1 className="text-2xl font-bold">Enter OTP</h1>
-            <p className="text-muted-foreground">We've sent a one-time code to {phone}</p>
-          </div>
-          <div className="space-y-4">
-            <Input
-              placeholder="Enter 4-digit code"
-              value={otpCode}
-              onChange={(e) => setOtpCode(e.target.value)}
-              maxLength={6}
-            />
-            <div className="flex gap-2">
-              <Button onClick={verifyOtp} className="flex-1">
-                Verify
-              </Button>
-              <Button
-                variant="ghost"
-                onClick={async () => {
-                  try {
-                    await fetch(`${API}/otp`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ phone }),
-                    });
-                    toast.success("OTP resent");
-                  } catch (e) {
-                    toast.error("Failed to resend OTP");
-                  }
-                }}
-              >
-                Resend
-              </Button>
-            </div>
-            <Button variant="ghost" onClick={() => setCurrentView("welcome")}>Cancel</Button>
-          </div>
-        </Card>
-      </div>
-    );
-  }
+  // OTP verification screen removed as it's handled globally now
 
   // Menu Screen
   if (currentView === "menu") {
     return (
       <div className="min-h-screen bg-background">
-        <header className="sticky top-0 bg-card border-b p-4 flex items-center justify-between shadow-sm z-10">
-          <div>
-            <h2 className="font-bold text-lg">Table {tableNumber}</h2>
-            <p className="text-sm text-muted-foreground">{customerName}</p>
-          </div>
-          <div className="flex items-center gap-3">
-            <Button variant="ghost" size="sm" onClick={() => setShowUnavailable((s) => !s)}>
-              {showUnavailable ? "Hide unavailable" : "Show unavailable"}
-            </Button>
-            {isAuthenticated && (
-              <Button variant="ghost" size="sm" onClick={signOut}>
-                Sign out
+        <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 px-4 py-3">
+          <div className="max-w-5xl mx-auto flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="bg-primary/10 p-2 rounded-full">
+                <Coffee className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <h2 className="font-semibold text-sm md:text-base">Table {tableNumber}</h2>
+                <p className="text-xs text-muted-foreground">{customerName}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setShowUnavailable((s) => !s)} className="hidden md:flex text-xs">
+                {showUnavailable ? "Hide unavailable" : "Show unavailable"}
               </Button>
-            )}
-            <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setCurrentView("cart")}
-            className="relative"
-          >
-            <ShoppingCart className="w-4 h-4 mr-2" />
-            Cart
-            {cart.length > 0 && (
-              <Badge className="ml-2 bg-primary">{cart.reduce((acc, item) => acc + item.quantity, 0)}</Badge>
-            )}
-            </Button>
+
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setCurrentView("cart")}
+                className="relative rounded-full hover:bg-primary/10"
+              >
+                <ShoppingCart className="w-5 h-5" />
+                {cart.length > 0 && (
+                  <span className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-primary text-[10px] font-bold text-primary-foreground flex items-center justify-center">
+                    {cart.reduce((acc, item) => acc + item.quantity, 0)}
+                  </span>
+                )}
+              </Button>
+
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="rounded-full">
+                    <MoreVertical className="w-5 h-5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuLabel>My Account</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => setShowUnavailable((s) => !s)} className="md:hidden">
+                    <UtensilsCrossed className="mr-2 h-4 w-4" />
+                    {showUnavailable ? "Hide unavailable" : "Show unavailable"}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={onSwitchView}>
+                    <ArrowRightLeft className="mr-2 h-4 w-4" />
+                    Switch View
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => showNotification("Test Notification", { body: "This is a test!" })}>
+                    <Bell className="mr-2 h-4 w-4" />
+                    Test Notification
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={signOut} className="text-destructive focus:text-destructive">
+                    <LogOut className="mr-2 h-4 w-4" />
+                    Log out
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
         </header>
 
-        <div className="p-4 space-y-6 pb-24">
+        {/* Hero Section */}
+        <div className="relative h-48 md:h-64 w-full overflow-hidden shrink-0">
+          <img
+            src="https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=1200&q=80"
+            alt="Cafe Banner"
+            className="w-full h-full object-cover"
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-background via-transparent to-transparent" />
+          <div className="absolute bottom-0 left-0 right-0 p-4 md:p-8 bg-gradient-to-t from-background to-transparent pt-20">
+            <div className="max-w-5xl mx-auto">
+              <h1 className="text-3xl md:text-4xl font-bold text-foreground">Good Morning, {customerName}</h1>
+              <p className="text-muted-foreground">What are you craving today?</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Category Nav */}
+        <div className="sticky top-[61px] z-40 bg-background/95 backdrop-blur border-b py-3 px-4 overflow-x-auto flex gap-2 no-scrollbar shadow-sm">
+          <div className="max-w-5xl mx-auto flex gap-2 w-full">
+            {Object.keys(menu).map(cat => (
+              <Button
+                key={cat}
+                variant="outline"
+                className="rounded-full whitespace-nowrap border-muted-foreground/20 hover:border-primary hover:text-primary"
+                onClick={() => {
+                  const el = document.getElementById(`cat-${cat}`);
+                  if (el) {
+                    const headerOffset = 130;
+                    const elementPosition = el.getBoundingClientRect().top;
+                    const offsetPosition = elementPosition + window.pageYOffset - headerOffset;
+                    window.scrollTo({ top: offsetPosition, behavior: "smooth" });
+                  }
+                }}
+              >
+                {cat}
+              </Button>
+            ))}
+          </div>
+        </div>
+
+        <div className="p-4 md:p-6 space-y-8 pb-32 max-w-5xl mx-auto min-h-screen">
           {Object.entries(menu).map(([category, items]) => {
             const visibleItems = (items || []).filter((it) => showUnavailable ? true : (it.available !== false));
             if (visibleItems.length === 0) return null;
             return (
-            <div key={category}>
-              <h3 className="text-xl font-bold mb-3 flex items-center gap-2">
-                <UtensilsCrossed className="w-5 h-5" />
-                {category}
-              </h3>
-              <div className="grid gap-3">
-                {visibleItems.map((item) => (
-                  <Card key={item.id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                    <div>
-                      <h4 className="font-medium">{item.name}</h4>
-                      <p className="text-sm text-muted-foreground">₹{item.price}</p>
-                      {item.available === false && (
-                        <div className="mt-1 inline-block">
-                          <span className="text-sm px-2 py-1 rounded bg-destructive/10 text-destructive">Unavailable</span>
+              <div key={category} id={`cat-${category}`} className="space-y-4 scroll-mt-32">
+                <h3 className="text-2xl font-bold tracking-tight flex items-center gap-2 text-foreground">
+                  {category}
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {visibleItems.map((item: any) => {
+                    const qty = cart.find(i => i.id === item.id)?.quantity || 0;
+                    return (
+                      <div key={item.id} className="group flex gap-4 p-4 rounded-xl border bg-card/50 hover:bg-card transition-all hover:shadow-md">
+                        <div className="flex-1 flex flex-col justify-between space-y-2">
+                          <div>
+                            <h4 className="font-semibold text-lg leading-tight">{item.name}</h4>
+                            <p className="text-sm text-muted-foreground line-clamp-2 mt-1">{item.description || "Delicious and freshly prepared."}</p>
+                          </div>
+                          <div className="flex items-center justify-between mt-2">
+                            <p className="font-medium text-foreground">₹{item.price}</p>
+                            {item.available === false && (
+                              <Badge variant="destructive" className="text-[10px]">Unavailable</Badge>
+                            )}
+                          </div>
                         </div>
-                      )}
-                    </div>
-                    <div className="w-full sm:w-auto flex items-center gap-2">
-                      <div className="flex items-center border rounded-md overflow-hidden">
-                        <Button variant="ghost" size="sm" onClick={() => decMenuQuantity(item.id)}>
-                          <Minus className="w-4 h-4" />
-                        </Button>
-                        <div className="px-3 py-2">{itemQuantities[item.id] || 0}</div>
-                        <Button variant="ghost" size="sm" onClick={() => incMenuQuantity(item.id)}>
-                          <Plus className="w-4 h-4" />
-                        </Button>
+
+                        <div className="relative w-32 h-32 rounded-lg overflow-hidden bg-muted flex-shrink-0">
+                          {item.image ? (
+                            <img src={item.image} alt={item.name} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center bg-secondary/20 text-muted-foreground">
+                              <Coffee className="w-8 h-8 opacity-20" />
+                            </div>
+                          )}
+
+                          <div className="absolute bottom-2 right-2">
+                            {qty > 0 ? (
+                              <div className="flex items-center bg-background rounded-full shadow-lg border p-0.5 h-8">
+                                <Button variant="ghost" size="icon" className="h-7 w-7 rounded-full hover:bg-secondary/30" onClick={() => updateQuantity(item.id, -1)}>
+                                  <Minus className="w-3 h-3" />
+                                </Button>
+                                <span className="w-6 text-center font-medium text-xs">{qty}</span>
+                                <Button variant="ghost" size="icon" className="h-7 w-7 rounded-full hover:bg-secondary/30" onClick={() => addToCart(item)}>
+                                  <Plus className="w-3 h-3" />
+                                </Button>
+                              </div>
+                            ) : (
+                              <Button
+                                size="icon"
+                                className="h-8 w-8 rounded-full shadow-lg"
+                                onClick={() => addToCart(item)}
+                                disabled={item.available === false}
+                              >
+                                <Plus className="w-4 h-4" />
+                              </Button>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                      <Button
-                        onClick={() => addToCartWithQty(item, itemQuantities[item.id] && itemQuantities[item.id] > 0 ? itemQuantities[item.id] : 1)}
-                        size="lg"
-                        className="flex-1 sm:flex-none"
-                        disabled={item.available === false}
-                      >
-                        <ShoppingCart className="w-4 h-4 mr-2" />
-                        {item.available === false ? "Unavailable" : "Add to Cart"}
-                      </Button>
-                    </div>
-                  </Card>
-                ))}
+                    );
+                  })}
+                </div>
+                {/* Add to Cart Actions for this category? No, per item is better. 
+                    Let's add a small "Add to Order" button if quantity > 0 for the item 
+                */}
               </div>
-            </div>
             );
           })}
         </div>
+
+        {/* Floating Cart Bar */}
+        {cart.length > 0 && (
+          <div className="fixed bottom-4 left-4 right-4 z-50 max-w-5xl mx-auto">
+            <Button
+              onClick={() => setCurrentView("cart")}
+              className="w-full h-14 rounded-2xl shadow-xl text-lg flex justify-between items-center px-6 animate-in slide-in-from-bottom-4"
+              size="lg"
+            >
+              <div className="flex items-center gap-2">
+                <div className="bg-primary-foreground/20 px-2 py-0.5 rounded text-sm font-semibold">
+                  {cart.reduce((acc, item) => acc + item.quantity, 0)}
+                </div>
+                <span className="font-medium">View Cart</span>
+              </div>
+              <span className="font-bold">₹{getTotalAmount()}</span>
+            </Button>
+          </div>
+        )}
       </div>
     );
   }
@@ -656,66 +739,81 @@ export const CustomerApp = () => {
   if (currentView === "cart") {
     return (
       <div className="min-h-screen bg-background flex flex-col">
-        <header className="bg-card border-b p-4">
-          <div className="flex items-center gap-4">
-            <Button variant="ghost" size="sm" onClick={() => setCurrentView("menu")}>
-              ← Back
-            </Button>
-            <h2 className="font-bold text-lg">Your Order</h2>
+        <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 px-4 py-3">
+          <div className="max-w-5xl mx-auto flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <Button variant="ghost" size="sm" onClick={() => setCurrentView("menu")} className="rounded-full">
+                <ArrowRightLeft className="w-4 h-4 mr-2 rotate-180" /> Back to Menu
+              </Button>
+            </div>
+            <h2 className="font-semibold text-lg">Your Order</h2>
           </div>
         </header>
 
         {cart.length === 0 ? (
           <div className="flex-1 flex items-center justify-center p-8">
-            <div className="text-center space-y-4">
-              <ShoppingCart className="w-16 h-16 mx-auto text-muted-foreground" />
-              <h3 className="text-xl font-medium">Your cart is empty</h3>
-              <Button onClick={() => setCurrentView("menu")}>Browse Menu</Button>
+            <div className="text-center space-y-4 max-w-sm mx-auto">
+              <div className="w-20 h-20 bg-muted rounded-full flex items-center justify-center mx-auto">
+                <ShoppingCart className="w-10 h-10 text-muted-foreground" />
+              </div>
+              <h3 className="text-2xl font-bold tracking-tight">Your cart is empty</h3>
+              <p className="text-muted-foreground">Looks like you haven't added anything yet.</p>
+              <Button onClick={() => setCurrentView("menu")} size="lg" className="rounded-full px-8">
+                Browse Menu
+              </Button>
             </div>
           </div>
         ) : (
           <>
-            <div className="flex-1 p-4 space-y-3 overflow-y-auto">
+            <div className="flex-1 p-4 md:p-6 space-y-4 overflow-y-auto pb-32 max-w-3xl mx-auto w-full">
               {cart.map((item) => (
-                <Card key={item.id} className="p-4">
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="flex-1">
-                      <h4 className="font-medium">{item.name}</h4>
-                      <p className="text-sm text-muted-foreground">₹{item.price} each</p>
-                    </div>
-                    <Button variant="ghost" size="sm" onClick={() => removeFromCart(item.id)}>
-                      <X className="w-4 h-4" />
+                <Card key={item.id} className="p-4 border-0 bg-card/50 shadow-sm flex items-center justify-between gap-4">
+                  <div className="flex-1">
+                    <h4 className="font-semibold text-lg">{item.name}</h4>
+                    <p className="text-sm text-muted-foreground">₹{item.price} each</p>
+                  </div>
+
+                  <div className="flex items-center gap-3 bg-background rounded-full border p-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 rounded-full"
+                      onClick={() => updateQuantity(item.id, -1)}
+                    >
+                      <Minus className="w-3 h-3" />
+                    </Button>
+                    <span className="font-medium w-6 text-center text-sm">{item.quantity}</span>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 rounded-full"
+                      onClick={() => updateQuantity(item.id, 1)}
+                    >
+                      <Plus className="w-3 h-3" />
                     </Button>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => updateQuantity(item.id, -1)}
-                      >
-                        <Minus className="w-4 h-4" />
-                      </Button>
-                      <span className="font-medium w-8 text-center">{item.quantity}</span>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => updateQuantity(item.id, 1)}
-                      >
-                        <Plus className="w-4 h-4" />
-                      </Button>
-                    </div>
+
+                  <div className="text-right min-w-[80px]">
                     <p className="font-bold">₹{item.price * item.quantity}</p>
                   </div>
+
+                  <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-destructive" onClick={() => removeFromCart(item.id)}>
+                    <X className="w-4 h-4" />
+                  </Button>
                 </Card>
               ))}
             </div>
 
-            <div className="border-t bg-card p-4 space-y-3">
-              <div className="text-sm text-muted-foreground">The staff will generate the bill when ready.</div>
-              <Button onClick={handlePlaceOrder} className="w-full" variant="outline" size="lg">
-                Place Order (Send to Kitchen)
-              </Button>
+            <div className="fixed bottom-0 left-0 right-0 border-t border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 p-4 md:p-6 z-40">
+              <div className="max-w-3xl mx-auto space-y-4">
+                <div className="flex justify-between items-center text-lg font-medium">
+                  <span className="text-muted-foreground">Total Amount</span>
+                  <span className="text-2xl font-bold">₹{getTotalAmount()}</span>
+                </div>
+                <Button onClick={handlePlaceOrder} className="w-full rounded-full text-lg h-12 shadow-lg shadow-primary/20" size="lg">
+                  Place Order
+                </Button>
+              </div>
             </div>
           </>
         )}

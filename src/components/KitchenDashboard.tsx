@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MenuManagement } from "./MenuManagement";
 import { DailyReport } from "./DailyReport";
+import { requestNotificationPermission, showNotification } from "@/lib/notifications";
 
 // API base
 const API = (import.meta.env && import.meta.env.VITE_API_URL) || "http://localhost:4001";
@@ -63,11 +64,24 @@ type Order = {
   timestamp: number;
 };
 
-export const KitchenDashboard = () => {
+interface KitchenDashboardProps {
+  onLogout: () => void;
+  onSwitchView: () => void;
+}
+
+export const KitchenDashboard = ({ onLogout, onSwitchView }: KitchenDashboardProps) => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [reportTick, setReportTick] = useState(0);
+  const [previousOrderCount, setPreviousOrderCount] = useState(0);
 
   useEffect(() => {
+    // Request notification permission
+    requestNotificationPermission().then(permission => {
+      if (permission === 'granted') {
+        console.log('Kitchen notification permission granted');
+      }
+    });
+
     // Initial fetch
     loadOrders();
 
@@ -81,6 +95,22 @@ export const KitchenDashboard = () => {
 
   const loadOrders = async () => {
     const fetchedOrders = await fetchLiveOrders();
+
+    // Check for new orders and show notification
+    if (fetchedOrders.length > previousOrderCount) {
+      const newOrders = fetchedOrders.slice(previousOrderCount);
+      newOrders.forEach(order => {
+        if (order.status === 'PENDING') {
+          showNotification('New Order! 🔔', {
+            body: `Table ${order.tableNumber} - ${order.customerName} (${order.items.length} items)`,
+            tag: `order-${order.id}`,
+            requireInteraction: true
+          });
+        }
+      });
+    }
+
+    setPreviousOrderCount(fetchedOrders.length);
     setOrders(fetchedOrders);
   };
 
@@ -172,22 +202,37 @@ export const KitchenDashboard = () => {
   });
 
   return (
-    <div className="min-h-screen bg-white">
-      <header className="bg-card border-b p-6 shadow-md">
-        <div className="max-w-7xl mx-auto">
-          <h1 className="text-3xl font-bold flex items-center gap-3 text-foreground">
-            <CheckCircle className="w-8 h-8 text-primary" />
-            Kitchen Dashboard
-          </h1>
-          <p className="text-muted-foreground mt-1">
-            Manage orders, menu, and view reports
-          </p>
-          <div className="mt-3">
-            <Button onClick={async () => {
-              await loadOrders();
-              try { localStorage.setItem("reports-updated", Date.now().toString()); } catch (e) {}
-              setReportTick((t) => t + 1);
-            }} size="sm">Refresh</Button>
+    <div className="min-h-screen bg-background">
+      <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 px-6 py-4">
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold flex items-center gap-3 text-foreground">
+              <CheckCircle className="w-6 h-6 text-primary" />
+              Kitchen Dashboard
+            </h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              Manage orders, menu, and view reports
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                await loadOrders();
+                try { localStorage.setItem("reports-updated", Date.now().toString()); } catch (e) { }
+                setReportTick((t) => t + 1);
+              }}
+            >
+              Refresh
+            </Button>
+            <div className="h-6 w-px bg-border mx-2" />
+            <Button variant="ghost" size="sm" onClick={onSwitchView}>
+              Switch View
+            </Button>
+            <Button variant="ghost" size="sm" onClick={onLogout} className="text-destructive hover:text-destructive hover:bg-destructive/10">
+              Logout
+            </Button>
           </div>
         </div>
       </header>
@@ -230,9 +275,8 @@ export const KitchenDashboard = () => {
                 {sortedOrders.filter(o => o.status !== "COMPLETED").map((order) => (
                   <Card
                     key={order.id}
-                    className={`p-6 space-y-4 ${
-                      order.status === "BILL_REQUESTED" ? "ring-2 ring-destructive" : ""
-                    }`}
+                    className={`p-6 space-y-4 ${order.status === "BILL_REQUESTED" ? "ring-2 ring-destructive" : ""
+                      }`}
                   >
                     <div className="flex items-start justify-between">
                       <div>

@@ -20,8 +20,58 @@ try {
 const app = express();
 const PORT = process.env.PORT || 4001;
 
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:5173', 'http://localhost:3000'],
+  credentials: true
+}));
 app.use(express.json());
+
+// Session setup for OAuth
+const session = require('express-session');
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'your-secret-key-change-in-production',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { secure: false } // set to true in production with HTTPS
+}));
+
+// Passport setup
+const passport = require('passport');
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+
+app.use(passport.initialize());
+app.use(passport.session());
+
+// Configure Google OAuth Strategy
+if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+  passport.use(new GoogleStrategy({
+    clientID: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    callbackURL: "http://localhost:4001/auth/google/callback"
+  },
+    function (accessToken, refreshToken, profile, cb) {
+      // In production, save user to database
+      const user = {
+        id: profile.id,
+        email: profile.emails?.[0]?.value,
+        name: profile.displayName,
+        authMethod: 'google'
+      };
+      return cb(null, user);
+    }));
+
+  passport.serializeUser((user, done) => {
+    done(null, user);
+  });
+
+  passport.deserializeUser((user, done) => {
+    done(null, user);
+  });
+
+  console.log("Google OAuth configured");
+} else {
+  console.warn("GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not found. Google OAuth disabled.");
+}
 
 // In-memory stores (reset on restart)
 const orders = [];
@@ -99,13 +149,13 @@ app.post("/menu", async (req, res) => {
   if (!menuData[category]) menuData[category] = [];
   const item = { id: newId, name, category, price, available: available ?? true };
   menuData[category].push(item);
-    if (useMongo && mongoDb) {
-      try {
-        await mongoDb.collection("menu").updateOne({ _id: item.id }, { $set: { ...item, _id: item.id } }, { upsert: true });
-      } catch (e) {
-        console.warn("Failed to persist menu item to MongoDB:", e && e.message ? e.message : e);
-      }
+  if (useMongo && mongoDb) {
+    try {
+      await mongoDb.collection("menu").updateOne({ _id: item.id }, { $set: { ...item, _id: item.id } }, { upsert: true });
+    } catch (e) {
+      console.warn("Failed to persist menu item to MongoDB:", e && e.message ? e.message : e);
     }
+  }
   res.json({ success: true, item });
 });
 
@@ -121,13 +171,13 @@ app.put("/menu/:id", async (req, res) => {
     if (!menuData[category]) menuData[category] = [];
     const updated = { id, name: name ?? old.name, category, price: typeof price === 'number' ? price : old.price, available: available ?? old.available };
     menuData[category].push(updated);
-    
+
     return res.json({ success: true, item: updated });
   }
   // update in-place
   const updated = { ...old, name: name ?? old.name, price: typeof price === 'number' ? price : old.price, available: available ?? old.available };
   menuData[pos.category][pos.index] = updated;
-  
+
   res.json({ success: true, item: updated });
 });
 
@@ -136,24 +186,24 @@ app.delete("/menu/:id", async (req, res) => {
   const pos = findMenuItem(id);
   if (!pos) return res.status(404).json({ success: false, message: "Item not found" });
   const removed = menuData[pos.category].splice(pos.index, 1)[0];
-    if (useMongo && mongoDb) {
-      try { await mongoDb.collection("menu").deleteOne({ _id: id }); } catch (e) { console.warn("Failed to delete menu item in MongoDB:", e && e.message ? e.message : e); }
-    }
+  if (useMongo && mongoDb) {
+    try { await mongoDb.collection("menu").deleteOne({ _id: id }); } catch (e) { console.warn("Failed to delete menu item in MongoDB:", e && e.message ? e.message : e); }
+  }
   res.json({ success: true, item: removed });
 });
 
 // GET /orders - list orders
-  app.get("/orders", async (req, res) => {
-    if (useMongo && mongoDb) {
-      try {
-        const docs = await mongoDb.collection("orders").find({}).toArray();
-        const mapped = (docs || []).map((d) => ({ id: d._id || d.id, tableNumber: d.tableNumber, customerName: d.customerName, items: d.items, totalAmount: d.totalAmount, status: d.status, createdAt: d.createdAt || d.timestamp || Date.now() }));
-        return res.json(mapped);
-      } catch (e) {
-        console.warn("Failed to load orders from MongoDB, falling back to in-memory", e);
-      }
+app.get("/orders", async (req, res) => {
+  if (useMongo && mongoDb) {
+    try {
+      const docs = await mongoDb.collection("orders").find({}).toArray();
+      const mapped = (docs || []).map((d) => ({ id: d._id || d.id, tableNumber: d.tableNumber, customerName: d.customerName, items: d.items, totalAmount: d.totalAmount, status: d.status, createdAt: d.createdAt || d.timestamp || Date.now() }));
+      return res.json(mapped);
+    } catch (e) {
+      console.warn("Failed to load orders from MongoDB, falling back to in-memory", e);
     }
-    res.json(orders);
+  }
+  res.json(orders);
 });
 
 // Diagnostic endpoint removed — use MongoDB health checks instead if needed
@@ -218,7 +268,68 @@ app.patch("/orders/:id", async (req, res) => {
 });
 
 // Simple OTP endpoints for local testing (insecure — for dev only)
-const otps = {}; // phone -> code
+const otps = {}; // phone/chatId -> { code, createdAt }
+
+// Telegram Bot Setup
+let bot = null;
+const phoneToChat = {}; // phone -> chatId mapping
+
+if (process.env.TELEGRAM_BOT_TOKEN) {
+  try {
+    const TelegramBot = require("node-telegram-bot-api");
+    bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+    console.log("Telegram Bot initialized with polling enabled");
+
+    // Handle /start command
+    bot.onText(/\/start/, (msg) => {
+      const chatId = msg.chat.id;
+      bot.sendMessage(chatId,
+        "Welcome! To use phone-based login, please share your phone number.\n\n" +
+        "You can share it by:\n" +
+        "1. Clicking the paperclip icon\n" +
+        "2. Selecting 'Contact'\n" +
+        "3. Choosing 'Share My Contact'\n\n" +
+        "Or simply type your phone number (e.g., +1234567890)"
+      );
+    });
+
+    // Handle contact (phone number shared via button)
+    bot.on('contact', (msg) => {
+      const chatId = msg.chat.id;
+      const phone = msg.contact.phone_number;
+
+      // Normalize phone (remove + and spaces)
+      const normalizedPhone = phone.replace(/[\s+\-()]/g, '');
+      phoneToChat[normalizedPhone] = chatId;
+
+      console.log(`Registered phone ${normalizedPhone} -> chatId ${chatId}`);
+      bot.sendMessage(chatId, `✅ Your phone number (${phone}) has been registered! You can now use it to login on the website.`);
+    });
+
+    // Handle text messages (in case user types phone number)
+    bot.on('message', (msg) => {
+      // Skip if it's a command or contact
+      if (msg.text && msg.text.startsWith('/')) return;
+      if (msg.contact) return;
+
+      const chatId = msg.chat.id;
+      const text = msg.text || '';
+
+      // Check if message looks like a phone number (contains mostly digits)
+      const digitsOnly = text.replace(/[\s+\-()]/g, '');
+      if (digitsOnly.length >= 10 && /^\d+$/.test(digitsOnly)) {
+        phoneToChat[digitsOnly] = chatId;
+        console.log(`Registered phone ${digitsOnly} -> chatId ${chatId}`);
+        bot.sendMessage(chatId, `✅ Your phone number has been registered! You can now use it to login on the website.`);
+      }
+    });
+
+  } catch (e) {
+    console.warn("Failed to initialize Telegram Bot:", e.message);
+  }
+} else {
+  console.warn("TELEGRAM_BOT_TOKEN not found in .env. Telegram features will be disabled.");
+}
 
 app.post("/otp", (req, res) => {
   const { phone } = req.body;
@@ -230,16 +341,65 @@ app.post("/otp", (req, res) => {
   res.json({ success: true, code });
 });
 
-// Debug endpoint to list recently generated OTPs (development only)
-if (process.env.NODE_ENV !== 'production') {
-  app.get('/debug/otps', (req, res) => {
-    try {
-      return res.json({ success: true, otps });
-    } catch (e) {
-      return res.status(500).json({ success: false, message: String(e) });
-    }
-  });
-}
+// Telegram OTP Endpoints (phone-based)
+app.post("/auth/telegram/otp", async (req, res) => {
+  const { phone } = req.body;
+  if (!phone) return res.status(400).json({ success: false, message: "Phone number required" });
+
+  if (!bot) {
+    return res.status(503).json({ success: false, message: "Telegram service not configured (missing token)" });
+  }
+
+  // Normalize phone number
+  const normalizedPhone = phone.replace(/[\s+\-()]/g, '');
+
+  // Look up chatId from phone number
+  const chatId = phoneToChat[normalizedPhone];
+  if (!chatId) {
+    return res.status(404).json({
+      success: false,
+      message: "Phone number not registered. Please send /start to the bot and share your phone number first."
+    });
+  }
+
+  const code = Math.floor(1000 + Math.random() * 9000).toString();
+  otps[normalizedPhone] = { code, createdAt: Date.now() };
+
+  try {
+    await bot.sendMessage(chatId, `🔐 Your login code is: ${code}\n\nThis code will expire in 5 minutes.`);
+    console.log(`Sent Telegram OTP to phone ${normalizedPhone} (chatId ${chatId}): ${code}`);
+    res.json({ success: true, message: "OTP sent to your Telegram" });
+  } catch (e) {
+    console.error("Failed to send Telegram message:", e.message);
+    res.status(500).json({ success: false, message: "Failed to send OTP via Telegram. Please try again." });
+  }
+});
+
+app.post("/auth/telegram/verify", (req, res) => {
+  const { phone, code } = req.body;
+  if (!phone || !code) return res.status(400).json({ success: false, message: "Phone number and code required" });
+
+  // Normalize phone number
+  const normalizedPhone = phone.replace(/[\s+\-()]/g, '');
+
+  const record = otps[normalizedPhone];
+  if (!record) return res.status(400).json({ success: false, message: "No OTP requested for this phone number" });
+
+  // Check expiration (e.g., 5 minutes)
+  if (Date.now() - record.createdAt > 5 * 60 * 1000) {
+    delete otps[normalizedPhone];
+    return res.status(400).json({ success: false, message: "OTP expired" });
+  }
+
+  if (record.code !== String(code)) return res.status(400).json({ success: false, message: "Invalid code" });
+
+  // Clear OTP after successful use
+  delete otps[normalizedPhone];
+
+  // Return a mock token or session info
+  const token = `telegram-${Date.now()}-${normalizedPhone}`;
+  res.json({ success: true, token, user: { phone: normalizedPhone, authMethod: 'telegram' } });
+});
 
 app.post("/otp/verify", (req, res) => {
   const { phone, code } = req.body;
@@ -249,6 +409,29 @@ app.post("/otp/verify", (req, res) => {
   if (record.code !== String(code)) return res.status(400).json({ success: false, message: "Invalid code" });
   delete otps[phone];
   res.json({ success: true });
+});
+
+// Google OAuth Routes
+app.get('/auth/google',
+  passport.authenticate('google', { scope: ['profile', 'email'] })
+);
+
+app.get('/auth/google/callback',
+  passport.authenticate('google', { failureRedirect: 'http://localhost:5173' }),
+  function (req, res) {
+    // Successful authentication - generate token
+    const token = `google-${Date.now()}-${req.user.id}`;
+    // Redirect to frontend with token
+    res.redirect(`http://localhost:5173?auth=success&token=${token}&user=${encodeURIComponent(JSON.stringify(req.user))}`);
+  }
+);
+
+// Logout endpoint
+app.post('/auth/logout', (req, res) => {
+  req.logout((err) => {
+    if (err) return res.status(500).json({ success: false });
+    res.json({ success: true });
+  });
 });
 
 // POST /bills - generate a bill (returns computed bill)
@@ -339,10 +522,27 @@ if (process.env.NODE_ENV !== 'production') {
   app.post('/admin/seed-menu', async (req, res) => {
     try {
       const docs = [];
-      Object.entries(menuData).forEach(([cat, items]) => {
+      const newMenuData = {
+        "Coffee": [
+          { id: "1", name: "Espresso", price: 120, available: true, description: "Rich and bold single shot espresso", image: "https://images.unsplash.com/photo-1510707577719-ae7c14805e3a?w=800&q=80" },
+          { id: "2", name: "Cappuccino", price: 180, available: true, description: "Espresso with steamed milk and foam", image: "https://images.unsplash.com/photo-1572442388796-11668a67e53d?w=800&q=80" },
+          { id: "3", name: "Latte", price: 200, available: true, description: "Creamy espresso with steamed milk", image: "https://images.unsplash.com/photo-1561882468-485337cbe922?w=800&q=80" },
+          { id: "4", name: "Americano", price: 150, available: true, description: "Espresso diluted with hot water", image: "https://images.unsplash.com/photo-1551033406-611cf9a28f67?w=800&q=80" }
+        ],
+        "Snacks": [
+          { id: "5", name: "Croissant", price: 120, available: true, description: "Buttery, flaky, and freshly baked", image: "https://images.unsplash.com/photo-1555507036-ab1f4038808a?w=800&q=80" },
+          { id: "6", name: "Muffin", price: 100, available: true, description: "Soft blueberry muffin", image: "https://images.unsplash.com/photo-1607958996333-41aef7caefaa?w=800&q=80" },
+          { id: "7", name: "Sandwich", price: 250, available: true, description: "Grilled cheese and veggie sandwich", image: "https://images.unsplash.com/photo-1528735602780-2552fd46c7af?w=800&q=80" }
+        ],
+        "Desserts": [
+          { id: "8", name: "Cheesecake", price: 220, available: true, description: "Classic New York style cheesecake", image: "https://images.unsplash.com/photo-1524351199678-941a58a3df50?w=800&q=80" },
+          { id: "9", name: "Brownie", price: 150, available: true, description: "Fudgy chocolate brownie", image: "https://images.unsplash.com/photo-1606313564200-e75d5e30476d?w=800&q=80" }
+        ]
+      };
+      Object.entries(newMenuData).forEach(([cat, items]) => {
         (items || []).forEach((it) => {
-          const id = it.id || `item-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
-          docs.push({ _id: id, name: it.name, price: it.price, available: typeof it.available === 'boolean' ? it.available : true, category: cat });
+          const id = it.id || `item-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          docs.push({ _id: id, name: it.name, price: it.price, available: typeof it.available === 'boolean' ? it.available : true, category: cat, description: it.description, image: it.image });
         });
       });
 

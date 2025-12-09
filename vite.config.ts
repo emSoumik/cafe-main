@@ -7,7 +7,8 @@ import { componentTagger } from "lovable-tagger";
 export default defineConfig(({ mode }) => ({
   // Base path for the project site. When publishing to
   // https://<user>.github.io/cafe/ set base to '/cafe/'.
-  base: '/cafe/',
+  // Commented out for local development
+  // base: '/cafe/',
   server: {
     host: "::",
     // Avoid port conflicts with the Firestore emulator (default 8080).
