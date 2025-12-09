@@ -1,4 +1,6 @@
 # Ignore firebase service account keys and local env
 *.json
+!package.json
+!package-lock.json
 .env
 serviceAccount*.json
