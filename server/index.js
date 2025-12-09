@@ -229,7 +229,7 @@ app.get("/orders/:id", (req, res) => {
 
 // POST /orders - create an order
 app.post("/orders", async (req, res) => {
-  const { tableNumber, customerName, items, totalAmount } = req.body;
+  const { tableNumber, customerName, items, totalAmount, phone } = req.body;
   if (!items || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ success: false, message: "No items in order" });
   }
@@ -238,9 +238,11 @@ app.post("/orders", async (req, res) => {
     id: `ORD-${Date.now()}`,
     tableNumber: tableNumber || null,
     customerName: customerName || "Guest",
+    phone: phone || null, // Store phone for bill notification
     items,
     totalAmount: totalAmount || items.reduce((s, it) => s + (it.price || 0) * (it.quantity || 1), 0),
     status: "PENDING",
+    billId: null, // Will be set when bill is generated
     createdAt: Date.now()
   };
 
@@ -436,7 +438,7 @@ app.post('/auth/logout', (req, res) => {
 
 // POST /bills - generate a bill (returns computed bill)
 app.post("/bills", async (req, res) => {
-  const { tableNumber, customerName, items } = req.body;
+  const { tableNumber, customerName, items, orderId, phone } = req.body;
   if (!items || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ success: false, message: "No items to bill" });
   }
@@ -450,6 +452,7 @@ app.post("/bills", async (req, res) => {
 
   const bill = {
     id: `BILL-${Date.now()}`,
+    orderId: orderId || null,
     tableNumber: tableNumber || null,
     customerName: customerName || "Guest",
     items,
@@ -464,6 +467,48 @@ app.post("/bills", async (req, res) => {
   if (useMongo && mongoDb) {
     try { await mongoDb.collection("bills").updateOne({ _id: bill.id }, { $set: { ...bill, _id: bill.id } }, { upsert: true }); } catch (e) { console.warn("Failed to persist bill to MongoDB:", e && e.message ? e.message : e); }
   }
+
+  // Link bill to order
+  if (orderId) {
+    const orderIdx = orders.findIndex(o => o.id === orderId);
+    if (orderIdx !== -1) {
+      orders[orderIdx].billId = bill.id;
+      orders[orderIdx].status = "COMPLETED";
+      if (useMongo && mongoDb) {
+        try { await mongoDb.collection("orders").updateOne({ _id: orderId }, { $set: { billId: bill.id, status: "COMPLETED" } }); } catch (e) { console.warn("Failed to update order with billId:", e); }
+      }
+    }
+  }
+
+  // Send Telegram notification with formatted bill
+  const customerPhone = phone || (orderId ? orders.find(o => o.id === orderId)?.phone : null);
+  if (customerPhone && bot) {
+    const normalizedPhone = customerPhone.replace(/[\s+\-()]/g, '');
+    const chatId = phoneToChat[normalizedPhone];
+    if (chatId) {
+      const itemLines = items.map(it => `  • ${it.name} x${it.quantity} — ₹${(it.price || 0) * (it.quantity || 1)}`).join('\n');
+      const billMessage = `🧾 *Your Bill*\n\n` +
+        `*Order:* ${orderId || 'N/A'}\n` +
+        `*Table:* ${tableNumber || 'N/A'}\n` +
+        `*Customer:* ${customerName || 'Guest'}\n\n` +
+        `📋 *Items:*\n${itemLines}\n\n` +
+        `━━━━━━━━━━━━━━━━\n` +
+        `Subtotal: ₹${subtotal}\n` +
+        `Tax (5%): ₹${tax}\n` +
+        `Service (2%): ₹${service}\n` +
+        `━━━━━━━━━━━━━━━━\n` +
+        `*Total: ₹${total}*\n\n` +
+        `Thank you for visiting! 🙏`;
+
+      try {
+        await bot.sendMessage(chatId, billMessage, { parse_mode: 'Markdown' });
+        console.log(`Sent bill to phone ${normalizedPhone} (chatId ${chatId})`);
+      } catch (e) {
+        console.warn("Failed to send Telegram bill:", e && e.message ? e.message : e);
+      }
+    }
+  }
+
   res.json({ success: true, bill });
 });
 
