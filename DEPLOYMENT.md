@@ -41,21 +41,70 @@ In production, you cannot rely on a local `.env` file in the same way. You must 
 
 ## 4. Hosting Options
 
-### Option A: Separate Frontend & Backend (Recommended)
-- **Frontend (Vercel/Netlify)**:
-  1. Push code to GitHub.
-  2. Import project in Vercel.
-  3. Set `VITE_API_URL` environment variable to your backend URL.
-  4. Deploy.
-- **Backend (Render/Railway/Heroku)**:
-  1. Push code to GitHub.
-  2. Create a new Web Service.
-  3. Set Root Directory to `server` (or configure build command to `cd server && npm install`).
-  4. Set Start Command to `node index.js`.
-  5. Add all environment variables (`TELEGRAM_BOT_TOKEN`, etc.).
-  6. Deploy.
+## 4. Hosting Options
 
-### Option B: VPS (DigitalOcean/EC2)
+The most robust way to deploy this application is to separate the **Frontend** (Vite + React) and the **Backend** (Node.js + Express).
+
+### Part 1: Backend Deployment (Required First)
+Since the frontend needs the backend URL to function, deploy the backend first. **Render** or **Railway** are great choices for Node.js apps.
+
+**Deploying to Render (Example):**
+1. Push your code to GitHub.
+2. Sign up at [render.com](https://render.com).
+3. Click "New +" -> "Web Service".
+4. Connect your GitHub repository.
+5. **Settings**:
+   - **Root Directory**: `server` (Important!)
+   - **Runtime**: `Node`
+   - **Build Command**: `npm install`
+   - **Start Command**: `node index.js`
+6. **Environment Variables** (Add these in the "Environment" tab):
+   - `TELEGRAM_BOT_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `SESSION_SECRET`
+   - `MONGO_URI` (if using database)
+7. Click "Create Web Service".
+8. **Copy the Service URL** (e.g., `https://my-cafe-backend.onrender.com`). You will need this for the frontend.
+
+---
+
+### Part 2: Frontend Deployment
+Now deploy the frontend to Vercel or Netlify.
+
+#### Option A: Deploying to Vercel (Recommended)
+1. Push your code to GitHub.
+2. Go to [vercel.com](https://vercel.com) and log in.
+3. Click "Add New..." -> "Project".
+4. Import your `cafe-main` repository.
+5. **Configure Project**:
+   - **Framework Preset**: Vite (should detect automatically)
+   - **Root Directory**: `./` (Default is fine)
+   - **Build Command**: `npm run build` (Default)
+   - **Output Directory**: `dist` (Default)
+6. **Environment Variables**:
+   - Expand the "Environment Variables" section.
+   - Key: `VITE_API_URL`
+   - Value: Your Backend URL from Part 1 (e.g., `https://my-cafe-backend.onrender.com`)
+   - Click "Add".
+7. Click **Deploy**.
+8. Once deployed, copy your new frontend URL (e.g., `https://my-cafe.vercel.app`).
+9. **Final Step**: Go back to your Backend (Render) and Google Cloud Console to add this new Vercel URL to the **CORS allowed origins** and **Authorized Redirect URIs**.
+
+#### Option B: Deploying to Netlify
+1. Push your code to GitHub.
+2. Go to [netlify.com](https://netlify.com) and log in.
+3. Click "Add new site" -> "Import from existing project".
+4. Connect using GitHub and select your repo.
+5. **Build Settings**:
+   - **Base directory**: Not strictly necessary if package.json is in root, but you can leave empty.
+   - **Build command**: `npm run build`
+   - **Publish directory**: `dist`
+6. **Environment variables** (Click "Advanced" or "Site settings" -> "Environment variables" after creation):
+   - Key: `VITE_API_URL`
+   - Value: Your Backend URL (e.g., `https://my-cafe-backend.onrender.com`)
+7. Click **Deploy Site**.
+8. **Final Step**: Just like Vercel, verify your CORS settings on the backend and Google Console with the new Netlify URL.
+
+### Option C: VPS (DigitalOcean/EC2)
+(Advanced users only)
 1. Provision a server (Ubuntu).
 2. Install Node.js and PM2.
 3. Clone repo.
